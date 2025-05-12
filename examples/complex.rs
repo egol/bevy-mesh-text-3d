@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use cosmic_text::{Attrs, Metrics, Style, Weight};
 
-use bevy_mesh_text_3d::{Fonts, InputText, MeshTextPlugin, Parameters, generate_meshes};
+use bevy_mesh_text_3d::{InputText, MeshTextPlugin, Parameters, Settings, generate_meshes};
 
 const CAMERA_VIEWPORT_HEIGHT: f32 = 950.0;
 // This factor controls the overall size of text in the world
@@ -18,7 +18,9 @@ const MOVE_FREQUENCY: f32 = 2.0 * std::f32::consts::PI / MOVE_PERIOD_SECONDS; //
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(MeshTextPlugin)
+        .add_plugins(MeshTextPlugin::new(
+            (CAMERA_VIEWPORT_HEIGHT / 950.0) * TEXT_SCALE_MULTIPLIER,
+        ))
         .add_systems(Update, keyboard_input)
         .insert_resource(AmbientLight {
             color: Color::WHITE,
@@ -115,7 +117,7 @@ fn setup(mut commands: Commands) {
 
 fn spawn_text(
     mut commands: Commands,
-    mut fonts: ResMut<Fonts>,
+    mut fonts: ResMut<Settings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -140,10 +142,6 @@ fn spawn_text(
 
     let attrs2 = Attrs::new().style(Style::Italic);
 
-    // Calculate scaling factor based on viewport height and global multiplier
-    // This text_scale_factor converts layout units to world units.
-    let text_scale_factor = (CAMERA_VIEWPORT_HEIGHT / 950.0) * TEXT_SCALE_MULTIPLIER;
-
     let meshes = generate_meshes(
         InputText::Rich {
             words: vec!["Hello".to_string(), "World".to_string()],
@@ -153,8 +151,6 @@ fn spawn_text(
         &mut fonts,
         Parameters {
             extrusion_depth: 3.0,
-            text_scale_factor,
-            default_attrs: Attrs::new(),
             font_size: default_metrics.font_size,
             line_height: default_metrics.line_height,
             alignment: None,

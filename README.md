@@ -14,7 +14,9 @@ For detailed usage, please check out the [simple](examples/simple.rs) or [comple
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(MeshTextPlugin)
+        .add_plugins(MeshTextPlugin::new(
+            2.0 // text scale factor
+        ))
         ...
         .run();
 }
@@ -44,8 +46,6 @@ fn spawn_text(
         &mut fonts,
         Parameters {
             extrusion_depth: 2.5,
-            text_scale_factor,
-            default_attrs: Attrs::new(),
             font_size: 14.0,
             line_height: 16.0,
             alignment: None,

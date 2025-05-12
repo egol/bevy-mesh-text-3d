@@ -4,20 +4,27 @@ use crate::{MeshTextEntry, Parameters};
 use bevy::prelude::*;
 use cosmic_text::{FontSystem, Metrics};
 
-pub struct MeshTextPlugin;
+pub struct MeshTextPlugin(f32);
+
+impl MeshTextPlugin {
+    pub fn new(text_scale_factor: f32) -> Self {
+        Self(text_scale_factor)
+    }
+}
 
 impl Plugin for MeshTextPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Fonts {
+        app.insert_resource(Settings {
             font_system: FontSystem::new(),
+            text_scale_factor: self.0,
         });
     }
 }
 
-pub fn generate_meshes<'a, M: Asset>(
-    text: InputText<'a, M>,
-    fonts: &mut ResMut<Fonts>,
-    params: Parameters<'a>,
+pub fn generate_meshes<M: Asset>(
+    text: InputText<M>,
+    fonts: &mut ResMut<Settings>,
+    params: Parameters,
     meshes: &mut ResMut<Assets<Mesh>>,
 ) -> Result<Vec<MeshTextEntry<M>>, MeshTextError> {
     if !text.is_valid() {
@@ -25,12 +32,12 @@ pub fn generate_meshes<'a, M: Asset>(
         return Err(MeshTextError::InvalidInput);
     }
 
-    let (materials, spans) = match text {
+    let (materials, spans, default_attrs) = match text {
         InputText::Simple {
             material,
             ref text,
             attrs,
-        } => (vec![material], vec![(text.as_str(), attrs.clone())]),
+        } => (vec![material], vec![(text.as_str(), attrs.clone())], attrs),
         InputText::Rich {
             materials,
             ref words,
@@ -44,6 +51,7 @@ pub fn generate_meshes<'a, M: Asset>(
                 .enumerate()
                 .map(|(i, (word, attr))| (word, attr.clone().metadata(i)))
                 .collect(),
+            attrs[0].clone(),
         ),
     };
 
@@ -52,12 +60,12 @@ pub fn generate_meshes<'a, M: Asset>(
         line_height: params.line_height,
     };
 
-    let text_scale_factor = params.text_scale_factor;
+    let text_scale_factor = fonts.text_scale_factor;
 
     let mut tx = TextGlyphs::new(
         default_metrics,
         spans,
-        &params.default_attrs,
+        &default_attrs,
         &mut fonts.font_system,
         params.alignment,
     );
@@ -113,6 +121,7 @@ pub fn generate_meshes<'a, M: Asset>(
 }
 
 #[derive(Resource)]
-pub struct Fonts {
+pub struct Settings {
     pub font_system: FontSystem,
+    pub text_scale_factor: f32,
 }

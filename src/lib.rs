@@ -3,12 +3,15 @@ use bevy::{
     render::mesh::Mesh,
     transform::components::Transform,
 };
-use cosmic_text::{Align, Attrs, fontdb::ID};
+pub use cosmic_text::{
+    Align, Attrs, CacheKeyFlags, CacheMetrics, Color, Family, Feature, FeatureTag, FontFeatures,
+    LetterSpacing, Stretch, Style, Weight, fontdb::ID,
+};
 
-mod command_encoder;
-mod extrude_glyph;
-mod mesh_text_plugin;
-mod text_glyphs;
+pub mod command_encoder;
+pub mod extrude_glyph;
+pub mod mesh_text_plugin;
+pub mod text_glyphs;
 
 pub use mesh_text_plugin::*;
 
@@ -83,13 +86,9 @@ pub struct MeshTextEntry<M: Asset> {
     pub material: Handle<M>,
 }
 
-pub struct Parameters<'a> {
+pub struct Parameters {
     /// Extrusion depth
     pub extrusion_depth: f32,
-    /// A multiplier for the text size
-    pub text_scale_factor: f32,
-    /// Default attributes for the text
-    pub default_attrs: Attrs<'a>,
     /// Font size
     pub font_size: f32,
     /// Line height

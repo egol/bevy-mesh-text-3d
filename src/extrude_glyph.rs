@@ -40,13 +40,6 @@ pub fn tessellate_beveled_glyph_with_gizmos(
     // 1. Extract glyph outline
     let glyph_outline = crate::glyph::extract_glyph_outline(glyph_info, font_system)?;
     
-    // #[cfg(feature = "debug")]
-    // if let Some(ref mut gizmos) = gizmos {
-    //     // Draw original glyph outline in white
-    //     draw_glyph_outline_gizmo(gizmos, &glyph_outline.path, glyph_outline.font_size, glyph_outline.units_per_em, Color::WHITE);
-    //     println!("Step 1: Drew original glyph outline for glyph {}", glyph_outline.glyph_id);
-    // }
-    
     // 2. Tessellate front cap
     let front_cap = crate::tess::tessellate_front_cap(
         &glyph_outline.path,
@@ -55,13 +48,6 @@ pub fn tessellate_beveled_glyph_with_gizmos(
         glyph_outline.units_per_em,
         glyph_outline.glyph_id,
     )?;
-    
-    // #[cfg(feature = "debug")]
-    // if let Some(ref mut gizmos) = gizmos {
-    //     // Draw front cap tessellation in cyan
-    //     draw_front_cap_gizmo(gizmos, &front_cap.vertices, &front_cap.indices, Color::srgb(0.0, 1.0, 1.0));
-    //     println!("Step 2: Drew front cap tessellation with {} vertices, {} triangles", front_cap.vertices.len(), front_cap.indices.len() / 3);
-    // }
     
     // 3. Extract contours for beveling
     let contours = crate::offset::extract_contours(
@@ -73,8 +59,8 @@ pub fn tessellate_beveled_glyph_with_gizmos(
     
     #[cfg(feature = "debug")]
     if let Some(ref mut gizmos) = gizmos {
-        // Draw extracted contours in yellow
-        draw_contours_gizmo(gizmos, &contours, 0.0, Color::srgb(1.0, 1.0, 0.0));
+        // Draw extracted contours in yellow with proper scaling
+        draw_contours_gizmo_scaled(gizmos, &contours, 0.0, Color::srgb(1.0, 1.0, 0.0), front_cap.scale_factor, front_cap.center_x, front_cap.center_y);
         println!("Step 3: Drew {} extracted contours", contours.len());
     }
     
@@ -89,8 +75,8 @@ pub fn tessellate_beveled_glyph_with_gizmos(
     
     #[cfg(feature = "debug")]
     if let Some(ref mut gizmos) = gizmos {
-        // Draw bevel rings in different colors
-        draw_bevel_rings_gizmo(gizmos, &bevel_rings, extrusion_depth);
+        // Draw bevel rings in different colors with proper scaling
+        draw_bevel_rings_gizmo_scaled(gizmos, &bevel_rings, extrusion_depth, front_cap.scale_factor, front_cap.center_x, front_cap.center_y);
         println!("Step 4: Drew {} bevel rings", bevel_rings.len());
     }
     
@@ -102,13 +88,6 @@ pub fn tessellate_beveled_glyph_with_gizmos(
         extrusion_depth,
         glyph_outline.glyph_id,
     )?;
-    
-    // #[cfg(feature = "debug")]
-    // if let Some(ref mut gizmos) = gizmos {
-    //     // Draw final mesh wireframe in magenta
-    //     draw_mesh_wireframe_gizmo(gizmos, &beveled_geometry.vertices, &beveled_geometry.indices, Color::srgb(1.0, 0.0, 1.0));
-    //     println!("Step 5: Drew final mesh wireframe with {} vertices, {} triangles", beveled_geometry.vertices.len(), beveled_geometry.indices.len() / 3);
-    // }
     
     // 6. Validate mesh
     let _validation = crate::mesh::check_mesh(&beveled_geometry)?;
@@ -183,6 +162,7 @@ fn draw_front_cap_gizmo(gizmos: &mut Gizmos, vertices: &[Vec3], indices: &[u16],
 
 #[cfg(feature = "debug")]
 fn draw_contours_gizmo(gizmos: &mut Gizmos, contours: &[crate::offset::Contour], z_offset: f32, color: Color) {
+    // Simple wrapper for backward compatibility - no scaling applied
     for contour in contours {
         for i in 0..contour.vertices.len() {
             let current = Vec3::new(contour.vertices[i].x, contour.vertices[i].y, z_offset);
@@ -200,8 +180,41 @@ fn draw_contours_gizmo(gizmos: &mut Gizmos, contours: &[crate::offset::Contour],
 }
 
 #[cfg(feature = "debug")]
+fn draw_contours_gizmo_scaled(gizmos: &mut Gizmos, contours: &[crate::offset::Contour], z_offset: f32, color: Color, _scale_factor: f32, _center_x: f32, _center_y: f32) {
+    // Note: The contour vertices are already in the final mesh coordinate system
+    // from the extract_contours function, so we don't need to apply additional transformations
+    for contour in contours {
+        for i in 0..contour.vertices.len() {
+            // Use contour vertices directly - they're already transformed
+            let current = Vec3::new(
+                contour.vertices[i].x,
+                contour.vertices[i].y,
+                z_offset
+            );
+            
+            let next_idx = if contour.is_closed {
+                (i + 1) % contour.vertices.len()
+            } else if i == contour.vertices.len() - 1 {
+                continue;
+            } else {
+                i + 1
+            };
+            
+            let next = Vec3::new(
+                contour.vertices[next_idx].x,
+                contour.vertices[next_idx].y,
+                z_offset
+            );
+            
+            gizmos.line(current, next, color);
+        }
+    }
+}
+
+#[cfg(feature = "debug")]
 fn draw_bevel_rings_gizmo(gizmos: &mut Gizmos, bevel_rings: &[crate::offset::BevelRings], extrusion_depth: f32) {
-    for (ring_set_idx, bevel_ring) in bevel_rings.iter().enumerate() {
+    // Simple wrapper for backward compatibility - no scaling applied
+    for (_ring_set_idx, bevel_ring) in bevel_rings.iter().enumerate() {
         let mut all_rings = vec![&bevel_ring.outer_contour];
         all_rings.extend(bevel_ring.rings.iter());
         all_rings.push(&bevel_ring.inner_contour);
@@ -225,6 +238,38 @@ fn draw_bevel_rings_gizmo(gizmos: &mut Gizmos, bevel_rings: &[crate::offset::Bev
             };
             
             draw_contours_gizmo(gizmos, &[(*ring).clone()], z_offset, color);
+        }
+    }
+}
+
+#[cfg(feature = "debug")]
+fn draw_bevel_rings_gizmo_scaled(gizmos: &mut Gizmos, bevel_rings: &[crate::offset::BevelRings], extrusion_depth: f32, _scale_factor: f32, _center_x: f32, _center_y: f32) {
+    println!("DEBUG: Drawing {} bevel rings with correct scaling", bevel_rings.len());
+    
+    for bevel_ring in bevel_rings {
+        let mut all_rings = vec![&bevel_ring.outer_contour];
+        all_rings.extend(bevel_ring.rings.iter());
+        all_rings.push(&bevel_ring.inner_contour);
+        
+        for (ring_idx, ring) in all_rings.iter().enumerate() {
+            let z_offset = if ring_idx == 0 {
+                0.0 // Outer ring at front
+            } else if ring_idx == all_rings.len() - 1 {
+                extrusion_depth // Inner ring at back
+            } else {
+                // Intermediate rings interpolated
+                let t = ring_idx as f32 / (all_rings.len() - 1) as f32;
+                t * extrusion_depth
+            };
+            
+            // Different colors for different ring depths
+            let color = match ring_idx {
+                0 => Color::srgb(1.0, 0.0, 0.0),      // Red for outer ring
+                idx if idx == all_rings.len() - 1 => Color::srgb(0.0, 0.0, 1.0), // Blue for inner ring
+                _ => Color::srgb(0.0, 1.0, 0.0),      // Green for intermediate rings
+            };
+            
+            draw_contours_gizmo_scaled(gizmos, &[(*ring).clone()], z_offset, color, _scale_factor, _center_x, _center_y);
         }
     }
 }

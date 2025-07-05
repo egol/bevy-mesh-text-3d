@@ -21,6 +21,7 @@ pub mod mesh;
 pub mod render;
 
 pub use mesh_text_plugin::*;
+pub use extrude_glyph::{tessalate_glyph, tessellate_beveled_glyph};
 
 use thiserror::Error;
 
@@ -142,5 +143,3 @@ pub struct Parameters {
     /// Bevel parameters
     pub bevel: Option<BevelParameters>,
 }
-
-pub use extrude_glyph::{tessalate_glyph, tessellate_beveled_glyph};

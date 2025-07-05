@@ -41,9 +41,16 @@ pub fn tessalate_glyph(
     let scale_factor = glyph_info.font_size / units_per_em as f32;
 
     let mut builder = crate::command_encoder::LyonCommandEncoder::new();
-    face.outline_glyph(GlyphId(glyph_info.glyph_id), &mut builder)
-        .ok_or(MeshTextError::PathBuildingFailed)?;
+    let outline_result = face.outline_glyph(GlyphId(glyph_info.glyph_id), &mut builder);
+    
+    outline_result.ok_or(MeshTextError::PathBuildingFailed)?;
     let path = builder.build_path();
+
+    // Check if the path is empty
+    if path.iter().next().is_none() {
+        warn!("Empty path for glyph {}", glyph_info.glyph_id);
+        return Err(MeshTextError::PathBuildingFailed);
+    }
 
     // Calculate the center of the glyph using the font units bounding box
     // (font unit coordinates - these come directly from the font)
@@ -60,21 +67,27 @@ pub fn tessalate_glyph(
 
     let mut tessellator = FillTessellator::new();
 
-    // 1. Tessellate front face (z=front_z)
-    let mut front_geometry: VertexBuffers<Vec3, u16> = VertexBuffers::new();
-    tessellator
-        .tessellate_path(
-            &path,
-            &FillOptions::default(),
-            &mut BuffersBuilder::new(&mut front_geometry, |vertex: FillVertex| Vec3 {
-                // Subtract center to make rotation happen around the center of each glyph
-                x: (vertex.position().x - center_x) * scale_factor,
-                y: (vertex.position().y - center_y) * scale_factor,
-                z: front_z,
-            }),
-        )
-        .map_err(|_| MeshTextError::TessellationFailed)?;
+    // Try tessellation with different approaches
+    let tessellation_result = try_tessellation_with_fallbacks(
+        &mut tessellator,
+        &path,
+        center_x,
+        center_y,
+        scale_factor,
+        front_z,
+        back_z,
+        glyph_info.glyph_id,
+    );
 
+    let (front_geometry, back_geometry) = match tessellation_result {
+        Ok(result) => result,
+        Err(e) => {
+            error!("All tessellation attempts failed for glyph {}: {:?}", glyph_info.glyph_id, e);
+            return Err(e);
+        }
+    };
+
+    // Process front face
     let front_v_offset = final_positions.len() as u16;
     for v_pos in &front_geometry.vertices {
         final_positions.push(*v_pos);
@@ -90,21 +103,7 @@ pub fn tessalate_glyph(
         final_indices.push(front_v_offset + *index);
     }
 
-    // 2. Tessellate back face (z=back_z)
-    let mut back_geometry: VertexBuffers<Vec3, u16> = VertexBuffers::new();
-    tessellator
-        .tessellate_path(
-            &path, // Tessellate the same path
-            &FillOptions::default(),
-            &mut BuffersBuilder::new(&mut back_geometry, |vertex: FillVertex| Vec3 {
-                // Subtract center to make rotation happen around the center of each glyph
-                x: (vertex.position().x - center_x) * scale_factor,
-                y: (vertex.position().y - center_y) * scale_factor,
-                z: back_z, // Shifted in Z
-            }),
-        )
-        .map_err(|_| MeshTextError::TessellationFailed)?;
-
+    // Process back face
     let back_v_offset = final_positions.len() as u16;
     for v_pos in &back_geometry.vertices {
         final_positions.push(*v_pos);
@@ -202,6 +201,127 @@ pub fn tessalate_glyph(
         center_x * scale_factor,
         center_y * scale_factor,
     ))
+}
+
+fn try_tessellation_with_fallbacks(
+    tessellator: &mut FillTessellator,
+    path: &lyon::path::Path,
+    center_x: f32,
+    center_y: f32,
+    scale_factor: f32,
+    front_z: f32,
+    back_z: f32,
+    glyph_id: u16,
+) -> Result<(VertexBuffers<Vec3, u16>, VertexBuffers<Vec3, u16>), MeshTextError> {
+    // First attempt: Normal tessellation with default options
+    let result = try_tessellation_with_options(
+        tessellator,
+        path,
+        center_x,
+        center_y,
+        scale_factor,
+        front_z,
+        back_z,
+        &FillOptions::default(),
+    );
+    
+    if result.is_ok() {
+        return result;
+    }
+    
+    warn!("Normal tessellation failed for glyph {}, trying with tolerance", glyph_id);
+    
+    // Second attempt: Use higher tolerance
+    let mut options = FillOptions::default();
+    options.tolerance = 0.5; // Much higher tolerance
+    
+    let result = try_tessellation_with_options(
+        tessellator,
+        path,
+        center_x,
+        center_y,
+        scale_factor,
+        front_z,
+        back_z,
+        &options,
+    );
+    
+    if result.is_ok() {
+        return result;
+    }
+    
+    warn!("High tolerance tessellation failed for glyph {}, trying non-zero fill rule", glyph_id);
+    
+    // Third attempt: Use non-zero fill rule
+    let mut options = FillOptions::default();
+    options.fill_rule = lyon::tessellation::FillRule::NonZero;
+    
+    let result = try_tessellation_with_options(
+        tessellator,
+        path,
+        center_x,
+        center_y,
+        scale_factor,
+        front_z,
+        back_z,
+        &options,
+    );
+    
+    if result.is_ok() {
+        return result;
+    }
+    
+    error!("All tessellation attempts failed for glyph {}", glyph_id);
+    Err(MeshTextError::TessellationFailed)
+}
+
+fn try_tessellation_with_options(
+    tessellator: &mut FillTessellator,
+    path: &lyon::path::Path,
+    center_x: f32,
+    center_y: f32,
+    scale_factor: f32,
+    front_z: f32,
+    back_z: f32,
+    options: &FillOptions,
+) -> Result<(VertexBuffers<Vec3, u16>, VertexBuffers<Vec3, u16>), MeshTextError> {
+    // 1. Tessellate front face (z=front_z)
+    let mut front_geometry: VertexBuffers<Vec3, u16> = VertexBuffers::new();
+    tessellator
+        .tessellate_path(
+            path,
+            options,
+            &mut BuffersBuilder::new(&mut front_geometry, |vertex: FillVertex| Vec3 {
+                // Subtract center to make rotation happen around the center of each glyph
+                x: (vertex.position().x - center_x) * scale_factor,
+                y: (vertex.position().y - center_y) * scale_factor,
+                z: front_z,
+            }),
+        )
+        .map_err(|e| {
+            debug!("Front face tessellation failed: {:?}", e);
+            MeshTextError::TessellationFailed
+        })?;
+
+    // 2. Tessellate back face (z=back_z)
+    let mut back_geometry: VertexBuffers<Vec3, u16> = VertexBuffers::new();
+    tessellator
+        .tessellate_path(
+            path, // Tessellate the same path
+            options,
+            &mut BuffersBuilder::new(&mut back_geometry, |vertex: FillVertex| Vec3 {
+                // Subtract center to make rotation happen around the center of each glyph
+                x: (vertex.position().x - center_x) * scale_factor,
+                y: (vertex.position().y - center_y) * scale_factor,
+                z: back_z, // Shifted in Z
+            }),
+        )
+        .map_err(|e| {
+            debug!("Back face tessellation failed: {:?}", e);
+            MeshTextError::TessellationFailed
+        })?;
+
+    Ok((front_geometry, back_geometry))
 }
 
 // Helper function for adding side quads during extrusion

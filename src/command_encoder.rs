@@ -9,7 +9,8 @@ pub(crate) struct LyonCommandEncoder {
 impl LyonCommandEncoder {
     pub fn new() -> Self {
         // maximum distance between a curve and its approximation.
-        let tolerance = 0.05;
+        // Increased tolerance to reduce tessellation complexity
+        let tolerance = 0.1;
         Self {
             builder: Path::builder().with_svg().flattened(tolerance),
         }

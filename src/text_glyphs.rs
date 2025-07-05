@@ -81,11 +81,16 @@ impl TextGlyphs {
                                     error!("Failed to parse font");
                                     return None;
                                 };
-                                let bb = face.glyph_bounding_box(GlyphId(glyph.glyph_id))?;
+                                
+                                // Check if the glyph has a bounding box (space characters don't)
+                                let Some(bb) = face.glyph_bounding_box(GlyphId(glyph.glyph_id)) else {
+                                    return None;
+                                };
+                                
                                 match tessalate_glyph(glyph, bb, face, extrusion_depth) {
                                     Ok(n) => Some(n),
                                     Err(e) => {
-                                        error!("Failed to tessalate glyph {:?}", e);
+                                        error!("Failed to tessalate glyph {}: {}", glyph.glyph_id, e);
                                         None
                                     }
                                 }
@@ -96,7 +101,6 @@ impl TextGlyphs {
                             })
                     })
                 else {
-                    error!("Failed to tessalate glyph {:?}", glyph.glyph_id);
                     continue;
                 };
                 mesh_map

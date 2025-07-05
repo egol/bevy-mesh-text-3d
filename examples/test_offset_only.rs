@@ -40,7 +40,7 @@ fn setup(mut commands: Commands) {
     // Setup camera to look at origin (2D view)
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 0.0, 200.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(100.0, 0.0, 500.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
     // Add light

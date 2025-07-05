@@ -82,9 +82,9 @@ pub fn tessellate_beveled_glyph_with_gizmos(
     let bevel_rings = crate::offset::compute_bevel_rings(
         &contours,
         bevel_params.bevel_width,
-        bevel_params.bevel_segments,
+        bevel_params.bevel_segments as usize,
         bevel_params.profile_power,
-        glyph_outline.glyph_id,
+        glyph_outline.glyph_id.into(),
     )?;
     
     #[cfg(feature = "debug")]

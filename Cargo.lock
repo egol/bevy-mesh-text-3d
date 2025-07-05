@@ -316,6 +316,7 @@ name = "bevy-mesh-text-3d"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "cavalier_contours",
  "cosmic-text 0.14.2",
  "lyon",
  "thiserror 2.0.12",
@@ -1478,6 +1479,16 @@ dependencies = [
  "rustix",
  "slab",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "cavalier_contours"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d96d14b73da522c59e5e8d2aafcfbcd45380ab9a3eae6dd98108689d9c948a97"
+dependencies = [
+ "num-traits",
+ "static_aabb2d_index",
 ]
 
 [[package]]
@@ -3865,6 +3876,15 @@ name = "stackfuture"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6eae92052b72ef70dafa16eddbabffc77e5ca3574be2f7bc1127b36f0a7ad7f2"
+
+[[package]]
+name = "static_aabb2d_index"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1204bd3057a2225dc60d157bd921aaeaa4d318527bd32af4678cad39e5279849"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "static_assertions"

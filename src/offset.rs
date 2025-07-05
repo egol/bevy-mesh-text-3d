@@ -2,6 +2,10 @@ use bevy::prelude::*;
 use lyon::path::{Path, PathEvent};
 use crate::MeshTextError;
 
+// Import cavalier_contours for robust polygon offsetting
+use cavalier_contours::polyline::{Polyline, PlineVertex, PlineSourceMut};
+use cavalier_contours::polyline::internal::pline_offset::parallel_offset;
+
 /// Represents a polygon contour with vertices
 #[derive(Debug, Clone)]
 pub struct Contour {
@@ -17,259 +21,288 @@ pub struct BevelRings {
     pub rings: Vec<Contour>, // Intermediate rings for curved profiles
 }
 
+/// Tolerance for vertex deduplication
+const VERTEX_TOLERANCE: f32 = 1e-6;
+
+/// Remove duplicate vertices from a list of vertices
+fn deduplicate_vertices(vertices: &mut Vec<Vec2>) {
+    if vertices.len() < 2 {
+        return;
+    }
+    
+    let mut i = 0;
+    while i < vertices.len() - 1 {
+        if vertices[i].distance(vertices[i + 1]) < VERTEX_TOLERANCE {
+            vertices.remove(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// Extract contours from a lyon path
 pub fn extract_contours(path: &Path, scale_factor: f32, center_x: f32, center_y: f32) -> Vec<Contour> {
     let mut contours = Vec::new();
-    let mut current_contour = Vec::new();
-    let mut start_point;
+    let mut current_vertices = Vec::new();
+    let mut start_pos = Vec2::ZERO;
     
     for event in path.iter() {
         match event {
             PathEvent::Begin { at } => {
-                current_contour.clear();
-                start_point = Vec2::new(
-                    (at.x - center_x) * scale_factor,
-                    (at.y - center_y) * scale_factor,
+                current_vertices.clear();
+                start_pos = Vec2::new(
+                    (at.x * scale_factor) - center_x,
+                    -((at.y * scale_factor) - center_y)
                 );
-                current_contour.push(start_point);
+                current_vertices.push(start_pos);
             }
             PathEvent::Line { from: _, to } => {
-                let point = Vec2::new(
-                    (to.x - center_x) * scale_factor,
-                    (to.y - center_y) * scale_factor,
+                let vertex = Vec2::new(
+                    (to.x * scale_factor) - center_x,
+                    -((to.y * scale_factor) - center_y)
                 );
-                current_contour.push(point);
+                current_vertices.push(vertex);
             }
-            PathEvent::End { last: _, first: _, close } => {
-                if close && current_contour.len() > 2 {
-                    // Remove the duplicate start point if it's closed
-                    if current_contour.first() == current_contour.last() {
-                        current_contour.pop();
+            PathEvent::Quadratic { from: _, ctrl, to } => {
+                // Approximate quadratic curve with multiple line segments
+                let segments = 8;
+                let from = current_vertices.last().copied().unwrap_or(Vec2::ZERO);
+                let ctrl = Vec2::new(
+                    (ctrl.x * scale_factor) - center_x,
+                    -((ctrl.y * scale_factor) - center_y)
+                );
+                let to = Vec2::new(
+                    (to.x * scale_factor) - center_x,
+                    -((to.y * scale_factor) - center_y)
+                );
+                
+                for i in 1..=segments {
+                    let t = i as f32 / segments as f32;
+                    let point = from * (1.0 - t) * (1.0 - t) + ctrl * 2.0 * (1.0 - t) * t + to * t * t;
+                    current_vertices.push(point);
+                }
+            }
+            PathEvent::Cubic { from: _, ctrl1, ctrl2, to } => {
+                // Approximate cubic curve with multiple line segments
+                let segments = 10;
+                let from = current_vertices.last().copied().unwrap_or(Vec2::ZERO);
+                let ctrl1 = Vec2::new(
+                    (ctrl1.x * scale_factor) - center_x,
+                    -((ctrl1.y * scale_factor) - center_y)
+                );
+                let ctrl2 = Vec2::new(
+                    (ctrl2.x * scale_factor) - center_x,
+                    -((ctrl2.y * scale_factor) - center_y)
+                );
+                let to = Vec2::new(
+                    (to.x * scale_factor) - center_x,
+                    -((to.y * scale_factor) - center_y)
+                );
+                
+                for i in 1..=segments {
+                    let t = i as f32 / segments as f32;
+                    let point = from * (1.0 - t).powi(3) + 
+                               ctrl1 * 3.0 * (1.0 - t).powi(2) * t +
+                               ctrl2 * 3.0 * (1.0 - t) * t.powi(2) + 
+                               to * t.powi(3);
+                    current_vertices.push(point);
+                }
+            }
+            PathEvent::End { close, .. } => {
+                if current_vertices.len() >= 3 {
+                    // Deduplicate vertices to prevent cavalier_contours issues
+                    deduplicate_vertices(&mut current_vertices);
+                    
+                    // Close the contour if needed
+                    if close {
+                        if let Some(last) = current_vertices.last() {
+                            if last.distance(start_pos) > VERTEX_TOLERANCE {
+                                current_vertices.push(start_pos);
+                            }
+                        }
                     }
+                    
                     contours.push(Contour {
-                        vertices: current_contour.clone(),
-                        is_closed: true,
-                    });
-                } else if current_contour.len() > 1 {
-                    contours.push(Contour {
-                        vertices: current_contour.clone(),
-                        is_closed: false,
+                        vertices: current_vertices.clone(),
+                        is_closed: close,
                     });
                 }
-                current_contour.clear();
-            }
-            _ => {
-                // For curves, we assume they've been flattened by lyon
-                panic!("Unexpected curve event in flattened path");
+                current_vertices.clear();
             }
         }
+    }
+    
+    // Handle any remaining vertices
+    if current_vertices.len() >= 3 {
+        deduplicate_vertices(&mut current_vertices);
+        contours.push(Contour {
+            vertices: current_vertices,
+            is_closed: false,
+        });
     }
     
     contours
 }
 
-/// Compute inset loop for bevel rim using bisector math
+/// Convert a Contour to a cavalier_contours Polyline
+fn contour_to_polyline(contour: &Contour) -> Result<Polyline<f64>, MeshTextError> {
+    if contour.vertices.len() < 2 {
+        return Err(MeshTextError::InvalidContour);
+    }
+    
+    let mut polyline = Polyline::new();
+    
+    // Add vertices to the polyline
+    for vertex in &contour.vertices {
+        // Convert to f64 and add with bulge = 0.0 (no arcs for now)
+        let pline_vertex = PlineVertex {
+            x: vertex.x as f64,
+            y: vertex.y as f64,
+            bulge: 0.0,
+        };
+        polyline.add_vertex(pline_vertex);
+    }
+    
+    // Set closed status
+    polyline.set_is_closed(contour.is_closed);
+    
+    Ok(polyline)
+}
+
+/// Convert a cavalier_contours Polyline back to a Contour
+fn polyline_to_contour(polyline: &Polyline<f64>) -> Contour {
+    let mut vertices = Vec::new();
+    
+    for i in 0..polyline.vertex_data.len() {
+        let vertex = &polyline.vertex_data[i];
+        vertices.push(Vec2::new(vertex.x as f32, vertex.y as f32));
+    }
+    
+    Contour {
+        vertices,
+        is_closed: polyline.is_closed,
+    }
+}
+
+/// Compute bevel rings using cavalier_contours multi-polyline offset
 pub fn compute_bevel_rings(
     contours: &[Contour],
     bevel_width: f32,
-    bevel_segments: u32,
+    bevel_segments: usize,
     profile_power: f32,
-    _glyph_id: u16,
+    _glyph_id: usize,
 ) -> Result<Vec<BevelRings>, MeshTextError> {
-    let mut all_rings = Vec::new();
+    if contours.is_empty() {
+        return Ok(Vec::new());
+    }
     
+    // Convert contours to polylines
+    let mut polylines = Vec::new();
     for contour in contours {
-        if contour.vertices.len() < 3 {
-            continue; // Skip degenerate contours
-        }
+        let polyline = contour_to_polyline(contour)?;
+        polylines.push(polyline);
+    }
+    
+    // Compute offset polylines using cavalier_contours
+    let mut all_bevel_rings = Vec::new();
+    
+    for polyline in polylines {
+        // Create outer offset (positive)
+        let outer_results = parallel_offset(
+            &polyline, 
+            bevel_width as f64, 
+            &Default::default()
+        );
         
-        let inset_contour = compute_inset_contour(&contour.vertices, bevel_width, contour.is_closed)?;
+        // Create inner offset (negative) 
+        let inner_results = parallel_offset(
+            &polyline, 
+            -(bevel_width as f64), 
+            &Default::default()
+        );
         
-        // Generate intermediate rings for curved profile
+        // Convert results back to contours
+        let outer_contours: Vec<Contour> = outer_results.into_iter()
+            .map(|pline| polyline_to_contour(&pline))
+            .collect();
+        
+        let inner_contours: Vec<Contour> = inner_results.into_iter()
+            .map(|pline| polyline_to_contour(&pline))
+            .collect();
+        
+        // Generate intermediate rings for curved profiles
         let mut rings = Vec::new();
-        if bevel_segments > 1 {
+        
+        if bevel_segments > 2 {
             for i in 1..bevel_segments {
-                let t = (i as f32 / bevel_segments as f32).powf(profile_power);
-                let ring_contour = interpolate_contours(&contour.vertices, &inset_contour, t, contour.is_closed);
-                rings.push(Contour {
-                    vertices: ring_contour,
-                    is_closed: contour.is_closed,
-                });
+                let t = i as f32 / bevel_segments as f32;
+                // Apply profile power for curved transitions
+                let profile_t = t.powf(profile_power);
+                let offset_distance = bevel_width * (1.0 - profile_t);
+                
+                let ring_results = parallel_offset(
+                    &polyline,
+                    offset_distance as f64,
+                    &Default::default()
+                );
+                
+                for ring_pline in ring_results {
+                    rings.push(polyline_to_contour(&ring_pline));
+                }
             }
         }
         
-        #[cfg(feature = "debug")]
-        println!("Checkpoint C: Computed bevel rings for glyph {} - outer: {} verts, inner: {} verts, rings: {}", 
-                 _glyph_id, contour.vertices.len(), inset_contour.len(), rings.len());
+        // Create bevel rings from the results
+        // For now, just use the first result from each offset
+        let outer_contour = outer_contours.first()
+            .cloned()
+            .unwrap_or_else(|| contour_to_polyline(&contours[0]).map(|p| polyline_to_contour(&p)).unwrap_or(contours[0].clone()));
         
-        all_rings.push(BevelRings {
-            outer_contour: contour.clone(),
-            inner_contour: Contour {
-                vertices: inset_contour,
-                is_closed: contour.is_closed,
-            },
+        let inner_contour = inner_contours.first()
+            .cloned()
+            .unwrap_or_else(|| contour_to_polyline(&contours[0]).map(|p| polyline_to_contour(&p)).unwrap_or(contours[0].clone()));
+        
+        all_bevel_rings.push(BevelRings {
+            outer_contour,
+            inner_contour,
             rings,
         });
     }
     
-    Ok(all_rings)
+    Ok(all_bevel_rings)
 }
 
-/// Find the intersection point of two infinite lines defined by points and directions
-fn line_intersection(p1: Vec2, d1: Vec2, p2: Vec2, d2: Vec2) -> Option<Vec2> {
-    let denominator = d1.x * d2.y - d1.y * d2.x;
-    
-    // Lines are parallel if denominator is zero
-    if denominator.abs() < f32::EPSILON {
-        return None;
-    }
-    
-    let dp = p2 - p1;
-    let t = (dp.x * d2.y - dp.y * d2.x) / denominator;
-    
-    Some(p1 + t * d1)
-}
-
-/// Compute inset contour by offsetting each edge inward and finding intersections
-fn compute_inset_contour(vertices: &[Vec2], bevel_width: f32, is_closed: bool) -> Result<Vec<Vec2>, MeshTextError> {
-    if vertices.len() < 3 {
-        return Err(MeshTextError::InvalidContour);
-    }
-    
-    let mut inset_vertices = Vec::new();
+/// Calculate offset normal for a point on the contour
+pub fn calculate_offset_normal(
+    vertices: &[Vec2],
+    index: usize,
+    _offset_distance: f32,
+) -> Vec2 {
     let len = vertices.len();
-    
-    // For each vertex, find the intersection of the two adjacent inset edges
-    for i in 0..len {
-        let prev_idx = if i == 0 {
-            if is_closed { len - 1 } else { 0 }
-        } else {
-            i - 1
-        };
-        let next_idx = if i == len - 1 {
-            if is_closed { 0 } else { len - 1 }
-        } else {
-            i + 1
-        };
-        
-        let p_prev = vertices[prev_idx];
-        let p_curr = vertices[i];
-        let p_next = vertices[next_idx];
-        
-        // Handle boundary vertices for open contours
-        if !is_closed && (i == 0 || i == len - 1) {
-            let edge = if i == 0 { p_next - p_curr } else { p_curr - p_prev };
-            let edge_len = edge.length();
-            if edge_len > f32::EPSILON {
-                // Inward normal (perpendicular to edge, pointing inward)
-                let normal = Vec2::new(-edge.y, edge.x) / edge_len;
-                inset_vertices.push(p_curr + normal * bevel_width);
-            } else {
-                inset_vertices.push(p_curr);
-            }
-            continue;
-        }
-        
-        // Get the two edges
-        let edge1 = p_curr - p_prev;
-        let edge2 = p_next - p_curr;
-        
-        let edge1_len = edge1.length();
-        let edge2_len = edge2.length();
-        
-        // Handle degenerate edges
-        if edge1_len < f32::EPSILON || edge2_len < f32::EPSILON {
-            inset_vertices.push(p_curr);
-            continue;
-        }
-        
-        // Calculate inward normals for both edges
-        let normal1 = Vec2::new(-edge1.y, edge1.x) / edge1_len;
-        let normal2 = Vec2::new(-edge2.y, edge2.x) / edge2_len;
-        
-        // Create the offset lines (infinite lines through the offset edge points)
-        let offset_p1 = p_prev + normal1 * bevel_width;
-        let offset_p2 = p_curr + normal1 * bevel_width;
-        let offset_p3 = p_curr + normal2 * bevel_width;
-        let offset_p4 = p_next + normal2 * bevel_width;
-        
-        // Find intersection of the two offset lines
-        let line1_dir = offset_p2 - offset_p1; // Direction of first offset line
-        let line2_dir = offset_p4 - offset_p3; // Direction of second offset line
-        
-        if let Some(intersection) = line_intersection(offset_p1, line1_dir, offset_p3, line2_dir) {
-            // Check if the intersection is reasonable (not too far from original vertex)
-            let distance_from_original = (intersection - p_curr).length();
-            let max_reasonable_distance = bevel_width * 10.0; // Reasonable upper bound
-            
-            if distance_from_original <= max_reasonable_distance {
-                inset_vertices.push(intersection);
-            } else {
-                // Fallback: use bisector method for extreme cases
-                let bisector = (normal1 + normal2).normalize_or_zero();
-                let bisector_length = if bisector.length() > f32::EPSILON {
-                    // Calculate the distance along the bisector
-                    let cos_half_angle = normal1.dot(normal2).max(-1.0).min(1.0);
-                    let sin_half_angle = ((1.0 - cos_half_angle) / 2.0).sqrt();
-                    if sin_half_angle > 0.1 {
-                        bevel_width / sin_half_angle
-                    } else {
-                        bevel_width * 2.0 // Fallback for very sharp angles
-                    }
-                } else {
-                    bevel_width
-                };
-                inset_vertices.push(p_curr + bisector * bisector_length);
-            }
-        } else {
-            // Lines are parallel - use simple offset
-            inset_vertices.push(p_curr + normal1 * bevel_width);
-        }
+    if len < 2 {
+        return Vec2::Y; // Default normal
     }
     
-    // Validate the result
-    if inset_vertices.len() != vertices.len() {
-        return Err(MeshTextError::InvalidContour);
-    }
+    let current = vertices[index];
+    let prev = vertices[if index == 0 { len - 1 } else { index - 1 }];
+    let next = vertices[(index + 1) % len];
     
-    Ok(inset_vertices)
+    // Calculate edge vectors
+    let edge1 = (current - prev).normalize_or_zero();
+    let edge2 = (next - current).normalize_or_zero();
+    
+    // Calculate normals (perpendicular to edges)
+    let normal1 = Vec2::new(-edge1.y, edge1.x);
+    let normal2 = Vec2::new(-edge2.y, edge2.x);
+    
+    // Average the normals for smoother offset
+    let avg_normal = (normal1 + normal2).normalize_or_zero();
+    
+    // If normalization failed, use a fallback
+    if avg_normal.length() < 1e-6 {
+        Vec2::new(-edge1.y, edge1.x).normalize_or_zero()
+    } else {
+        avg_normal
+    }
 }
 
-/// Interpolate between outer and inner contours for profile curves
-fn interpolate_contours(outer: &[Vec2], inner: &[Vec2], t: f32, _is_closed: bool) -> Vec<Vec2> {
-    assert_eq!(outer.len(), inner.len());
-    
-    outer.iter()
-        .zip(inner.iter())
-        .map(|(o, i)| o.lerp(*i, t))
-        .collect()
-}
-
-/// Export contours as SVG for debugging (only available with debug feature)
-#[cfg(feature = "debug")]
-pub fn export_contours_svg(contours: &[Contour], filename: &str) -> Result<(), std::io::Error> {
-    use std::fs::File;
-    use std::io::Write;
-    
-    let mut file = File::create(filename)?;
-    writeln!(file, r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-50 -50 100 100">"#)?;
-    
-    for (i, contour) in contours.iter().enumerate() {
-        if contour.vertices.is_empty() {
-            continue;
-        }
-        
-        write!(file, r#"<polyline points=""#)?;
-        for vertex in &contour.vertices {
-            write!(file, "{},{} ", vertex.x, -vertex.y)?; // Flip Y for SVG
-        }
-        if contour.is_closed {
-            let first = &contour.vertices[0];
-            write!(file, "{},{} ", first.x, -first.y)?;
-        }
-        writeln!(file, r#"" fill="none" stroke="hsl({}, 70%, 50%)" stroke-width="0.5"/>"#, i * 60)?;
-    }
-    
-    writeln!(file, "</svg>")?;
-    Ok(())
-} 

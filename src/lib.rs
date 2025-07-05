@@ -23,6 +23,10 @@ pub mod render;
 pub use mesh_text_plugin::*;
 pub use extrude_glyph::{tessalate_glyph, tessellate_beveled_glyph};
 
+// Export additional utilities for advanced usage
+pub use offset::{contour_to_polyline, polyline_to_contour, approximate_arc, draw_polyline, draw_contour_outline};
+pub use glyph::extract_glyph_outline;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

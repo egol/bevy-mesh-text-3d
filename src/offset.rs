@@ -3,7 +3,7 @@ use lyon::path::{Path, PathEvent};
 use crate::MeshTextError;
 
 // Import cavalier_contours for robust polygon offsetting
-use cavalier_contours::polyline::{Polyline, PlineVertex, PlineSourceMut};
+use cavalier_contours::polyline::{Polyline, PlineVertex, PlineSource, PlineSourceMut};
 use cavalier_contours::shape_algorithms::{Shape, ShapeOffsetOptions};
 use std::collections::HashSet;
 
@@ -208,7 +208,7 @@ pub fn extract_contours(path: &Path, scale_factor: f32, center_x: f32, center_y:
 }
 
 /// Convert a Contour to a cavalier_contours Polyline with proper cleanup
-fn contour_to_polyline(contour: &Contour) -> Result<Polyline<f64>, MeshTextError> {
+pub fn contour_to_polyline(contour: &Contour) -> Result<Polyline<f64>, MeshTextError> {
     let mut vertices = contour.vertices.clone();
     
     // Clean up vertices to prevent cavalier_contours issues
@@ -238,7 +238,7 @@ fn contour_to_polyline(contour: &Contour) -> Result<Polyline<f64>, MeshTextError
 }
 
 /// Convert a cavalier_contours Polyline back to a Contour
-fn polyline_to_contour(polyline: &Polyline<f64>) -> Contour {
+pub fn polyline_to_contour(polyline: &Polyline<f64>) -> Contour {
     let mut vertices = Vec::new();
     
     for i in 0..polyline.vertex_data.len() {
@@ -384,6 +384,136 @@ pub fn calculate_offset_normal(
         Vec2::new(-edge1.y, edge1.x).normalize_or_zero()
     } else {
         avg_normal
+    }
+}
+
+/// Approximate an arc defined by two polyline vertices with line segments
+pub fn approximate_arc(
+    start_vertex: PlineVertex<f64>, 
+    end_vertex: PlineVertex<f64>, 
+    segments: usize
+) -> Vec<(f64, f64)> {
+    let mut points = Vec::new();
+    
+    let start_x = start_vertex.x;
+    let start_y = start_vertex.y;
+    let end_x = end_vertex.x;
+    let end_y = end_vertex.y;
+    let bulge = start_vertex.bulge;
+    
+    // Calculate arc parameters from bulge
+    let chord_len = ((end_x - start_x).powi(2) + (end_y - start_y).powi(2)).sqrt();
+    let sagitta = chord_len * bulge.abs() / 2.0;
+    let radius = (chord_len.powi(2) + 4.0 * sagitta.powi(2)) / (8.0 * sagitta);
+    
+    // Calculate center point
+    let chord_mid_x = (start_x + end_x) / 2.0;
+    let chord_mid_y = (start_y + end_y) / 2.0;
+    
+    let chord_dx = end_x - start_x;
+    let chord_dy = end_y - start_y;
+    
+    let perp_dx = -chord_dy / chord_len;
+    let perp_dy = chord_dx / chord_len;
+    
+    let center_offset = radius - sagitta;
+    let center_offset = if bulge > 0.0 { center_offset } else { -center_offset };
+    
+    let center_x = chord_mid_x + perp_dx * center_offset;
+    let center_y = chord_mid_y + perp_dy * center_offset;
+    
+    // Calculate start and end angles
+    let start_angle = (start_y - center_y).atan2(start_x - center_x);
+    let end_angle = (end_y - center_y).atan2(end_x - center_x);
+    
+    // Calculate sweep angle
+    let mut sweep_angle = end_angle - start_angle;
+    if bulge > 0.0 {
+        if sweep_angle <= 0.0 {
+            sweep_angle += 2.0 * std::f64::consts::PI;
+        }
+    } else {
+        if sweep_angle >= 0.0 {
+            sweep_angle -= 2.0 * std::f64::consts::PI;
+        }
+    }
+    
+    // Generate points along the arc
+    points.push((start_x, start_y));
+    
+    for i in 1..segments {
+        let t = i as f64 / segments as f64;
+        let angle = start_angle + sweep_angle * t;
+        let x = center_x + radius * angle.cos();
+        let y = center_y + radius * angle.sin();
+        points.push((x, y));
+    }
+    
+    points.push((end_x, end_y));
+    points
+}
+
+/// Draw a polyline using Gizmos for debugging
+pub fn draw_polyline(gizmos: &mut Gizmos, polyline: &Polyline<f64>, color: Color, z_offset: f32) {
+    if polyline.vertex_count() < 2 {
+        return;
+    }
+    
+    for i in 0..polyline.vertex_count() {
+        let current_vertex = polyline.at(i);
+        let current_pos = Vec3::new(current_vertex.x as f32, current_vertex.y as f32, z_offset);
+        
+        // Determine next vertex index
+        let next_i = if polyline.is_closed() {
+            (i + 1) % polyline.vertex_count()
+        } else if i == polyline.vertex_count() - 1 {
+            continue; // Last vertex of open polyline
+        } else {
+            i + 1
+        };
+        
+        let next_vertex = polyline.at(next_i);
+        
+        // Check if this is an arc (bulge != 0) or a line (bulge == 0)
+        if current_vertex.bulge.abs() < 1e-10 {
+            // Draw straight line
+            let next_pos = Vec3::new(next_vertex.x as f32, next_vertex.y as f32, z_offset);
+            gizmos.line(current_pos, next_pos, color);
+        } else {
+            // Draw arc approximation with line segments
+            let segments = 16;
+            let arc_points = approximate_arc(current_vertex, next_vertex, segments);
+            
+            for j in 0..arc_points.len() - 1 {
+                let start_pos = Vec3::new(arc_points[j].0 as f32, arc_points[j].1 as f32, z_offset);
+                let end_pos = Vec3::new(arc_points[j + 1].0 as f32, arc_points[j + 1].1 as f32, z_offset);
+                gizmos.line(start_pos, end_pos, color);
+            }
+        }
+    }
+}
+
+/// Draw contour outline using Gizmos for debugging
+pub fn draw_contour_outline(gizmos: &mut Gizmos, contour: &Contour, color: Color, z_offset: f32) {
+    if contour.vertices.len() < 2 {
+        return;
+    }
+    
+    // Draw contour as simple lines
+    for i in 0..contour.vertices.len() {
+        let current = contour.vertices[i];
+        let next_i = if contour.is_closed {
+            (i + 1) % contour.vertices.len()
+        } else if i == contour.vertices.len() - 1 {
+            continue; // Don't draw last segment for open contours
+        } else {
+            i + 1
+        };
+        
+        let next = contour.vertices[next_i];
+        let start_pos = Vec3::new(current.x, current.y, z_offset);
+        let end_pos = Vec3::new(next.x, next.y, z_offset);
+        gizmos.line(start_pos, end_pos, color);
     }
 }
 

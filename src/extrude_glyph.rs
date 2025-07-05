@@ -8,11 +8,247 @@ use lyon::{
 };
 
 use crate::MeshTextError;
+use crate::BevelParameters;
+
+// New beveling function using the modular approach with gizmo visualization
+pub fn tessellate_beveled_glyph(
+    glyph_info: &cosmic_text::LayoutGlyph,
+    font_system: &mut cosmic_text::FontSystem,
+    extrusion_depth: f32,
+    bevel_params: &BevelParameters,
+) -> Result<(ExtrudedGlyphGeometry, f32, f32), MeshTextError> {
+    tessellate_beveled_glyph_with_gizmos(glyph_info, font_system, extrusion_depth, bevel_params, None)
+}
+
+// Beveling function with optional gizmo visualization
+pub fn tessellate_beveled_glyph_with_gizmos(
+    glyph_info: &cosmic_text::LayoutGlyph,
+    font_system: &mut cosmic_text::FontSystem,
+    extrusion_depth: f32,
+    bevel_params: &BevelParameters,
+    mut gizmos: Option<&mut Gizmos>,
+) -> Result<(ExtrudedGlyphGeometry, f32, f32), MeshTextError> {
+    #[cfg(feature = "debug")]
+    if let Some(ref mut gizmos) = gizmos {
+        // Draw coordinate system for reference
+        let origin = Vec3::ZERO;
+        gizmos.line(origin, origin + Vec3::X * 20.0, Color::srgb(1.0, 0.0, 0.0)); // Red X-axis
+        gizmos.line(origin, origin + Vec3::Y * 20.0, Color::srgb(0.0, 1.0, 0.0)); // Green Y-axis
+        gizmos.line(origin, origin + Vec3::Z * 20.0, Color::srgb(0.0, 0.0, 1.0)); // Blue Z-axis
+    }
+
+    // 1. Extract glyph outline
+    let glyph_outline = crate::glyph::extract_glyph_outline(glyph_info, font_system)?;
+    
+    // #[cfg(feature = "debug")]
+    // if let Some(ref mut gizmos) = gizmos {
+    //     // Draw original glyph outline in white
+    //     draw_glyph_outline_gizmo(gizmos, &glyph_outline.path, glyph_outline.font_size, glyph_outline.units_per_em, Color::WHITE);
+    //     println!("Step 1: Drew original glyph outline for glyph {}", glyph_outline.glyph_id);
+    // }
+    
+    // 2. Tessellate front cap
+    let front_cap = crate::tess::tessellate_front_cap(
+        &glyph_outline.path,
+        glyph_outline.bounding_box,
+        glyph_outline.font_size,
+        glyph_outline.units_per_em,
+        glyph_outline.glyph_id,
+    )?;
+    
+    // #[cfg(feature = "debug")]
+    // if let Some(ref mut gizmos) = gizmos {
+    //     // Draw front cap tessellation in cyan
+    //     draw_front_cap_gizmo(gizmos, &front_cap.vertices, &front_cap.indices, Color::srgb(0.0, 1.0, 1.0));
+    //     println!("Step 2: Drew front cap tessellation with {} vertices, {} triangles", front_cap.vertices.len(), front_cap.indices.len() / 3);
+    // }
+    
+    // 3. Extract contours for beveling
+    let contours = crate::offset::extract_contours(
+        &glyph_outline.path,
+        front_cap.scale_factor,
+        front_cap.center_x,
+        front_cap.center_y,
+    );
+    
+    #[cfg(feature = "debug")]
+    if let Some(ref mut gizmos) = gizmos {
+        // Draw extracted contours in yellow
+        draw_contours_gizmo(gizmos, &contours, 0.0, Color::srgb(1.0, 1.0, 0.0));
+        println!("Step 3: Drew {} extracted contours", contours.len());
+    }
+    
+    // 4. Compute bevel rings
+    let bevel_rings = crate::offset::compute_bevel_rings(
+        &contours,
+        bevel_params.bevel_width,
+        bevel_params.bevel_segments,
+        bevel_params.profile_power,
+        glyph_outline.glyph_id,
+    )?;
+    
+    #[cfg(feature = "debug")]
+    if let Some(ref mut gizmos) = gizmos {
+        // Draw bevel rings in different colors
+        draw_bevel_rings_gizmo(gizmos, &bevel_rings, extrusion_depth);
+        println!("Step 4: Drew {} bevel rings", bevel_rings.len());
+    }
+    
+    // 5. Build complete beveled mesh
+    let beveled_geometry = crate::mesh::build_beveled_mesh(
+        &front_cap.vertices,
+        &front_cap.indices,
+        &bevel_rings,
+        extrusion_depth,
+        glyph_outline.glyph_id,
+    )?;
+    
+    // #[cfg(feature = "debug")]
+    // if let Some(ref mut gizmos) = gizmos {
+    //     // Draw final mesh wireframe in magenta
+    //     draw_mesh_wireframe_gizmo(gizmos, &beveled_geometry.vertices, &beveled_geometry.indices, Color::srgb(1.0, 0.0, 1.0));
+    //     println!("Step 5: Drew final mesh wireframe with {} vertices, {} triangles", beveled_geometry.vertices.len(), beveled_geometry.indices.len() / 3);
+    // }
+    
+    // 6. Validate mesh
+    let _validation = crate::mesh::check_mesh(&beveled_geometry)?;
+    
+    #[cfg(feature = "debug")]
+    {
+        println!("Checkpoint F: Successfully created beveled glyph {} with {} vertices, {} triangles", 
+                 glyph_outline.glyph_id, beveled_geometry.vertices.len(), beveled_geometry.indices.len() / 3);
+    }
+    
+    // Convert to ExtrudedGlyphGeometry format for compatibility
+    let extruded_geometry = ExtrudedGlyphGeometry {
+        vertices: beveled_geometry.vertices,
+        indices: beveled_geometry.indices,
+        normals: beveled_geometry.normals,
+        uvs: beveled_geometry.uvs,
+    };
+    
+    Ok((
+        extruded_geometry,
+        front_cap.center_x,
+        front_cap.center_y,
+    ))
+}
+
+#[cfg(feature = "debug")]
+fn draw_glyph_outline_gizmo(gizmos: &mut Gizmos, path: &lyon::path::Path, font_size: f32, units_per_em: u16, color: Color) {
+    let scale_factor = font_size / units_per_em as f32;
+    let mut last_point: Option<lyon::geom::Point<f32>> = None;
+    
+    for event in path.iter() {
+        match event {
+            lyon::path::PathEvent::Begin { at } => {
+                last_point = Some(at);
+            }
+            lyon::path::PathEvent::Line { from: _, to } => {
+                if let Some(from) = last_point {
+                    let from_3d = Vec3::new(from.x * scale_factor, from.y * scale_factor, 0.0);
+                    let to_3d = Vec3::new(to.x * scale_factor, to.y * scale_factor, 0.0);
+                    gizmos.line(from_3d, to_3d, color);
+                }
+                last_point = Some(to);
+            }
+            lyon::path::PathEvent::End { last, first, close } => {
+                if close && last_point.is_some() {
+                    let last_3d = Vec3::new(last.x * scale_factor, last.y * scale_factor, 0.0);
+                    let first_3d = Vec3::new(first.x * scale_factor, first.y * scale_factor, 0.0);
+                    gizmos.line(last_3d, first_3d, color);
+                }
+                last_point = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "debug")]
+fn draw_front_cap_gizmo(gizmos: &mut Gizmos, vertices: &[Vec3], indices: &[u16], color: Color) {
+    // Draw triangle edges
+    for triangle in indices.chunks(3) {
+        if triangle.len() == 3 {
+            let v0 = vertices[triangle[0] as usize];
+            let v1 = vertices[triangle[1] as usize];
+            let v2 = vertices[triangle[2] as usize];
+            
+            gizmos.line(v0, v1, color);
+            gizmos.line(v1, v2, color);
+            gizmos.line(v2, v0, color);
+        }
+    }
+}
+
+#[cfg(feature = "debug")]
+fn draw_contours_gizmo(gizmos: &mut Gizmos, contours: &[crate::offset::Contour], z_offset: f32, color: Color) {
+    for contour in contours {
+        for i in 0..contour.vertices.len() {
+            let current = Vec3::new(contour.vertices[i].x, contour.vertices[i].y, z_offset);
+            let next_idx = if contour.is_closed {
+                (i + 1) % contour.vertices.len()
+            } else if i == contour.vertices.len() - 1 {
+                continue;
+            } else {
+                i + 1
+            };
+            let next = Vec3::new(contour.vertices[next_idx].x, contour.vertices[next_idx].y, z_offset);
+            gizmos.line(current, next, color);
+        }
+    }
+}
+
+#[cfg(feature = "debug")]
+fn draw_bevel_rings_gizmo(gizmos: &mut Gizmos, bevel_rings: &[crate::offset::BevelRings], extrusion_depth: f32) {
+    for (ring_set_idx, bevel_ring) in bevel_rings.iter().enumerate() {
+        let mut all_rings = vec![&bevel_ring.outer_contour];
+        all_rings.extend(bevel_ring.rings.iter());
+        all_rings.push(&bevel_ring.inner_contour);
+        
+        for (ring_idx, ring) in all_rings.iter().enumerate() {
+            let z_offset = if ring_idx == 0 {
+                0.0 // Outer ring at front
+            } else if ring_idx == all_rings.len() - 1 {
+                extrusion_depth // Inner ring at back
+            } else {
+                // Intermediate rings interpolated
+                let t = ring_idx as f32 / (all_rings.len() - 1) as f32;
+                t * extrusion_depth
+            };
+            
+            // Different colors for different ring depths
+            let color = match ring_idx {
+                0 => Color::srgb(1.0, 0.0, 0.0),      // Red for outer ring
+                idx if idx == all_rings.len() - 1 => Color::srgb(0.0, 0.0, 1.0), // Blue for inner ring
+                _ => Color::srgb(0.0, 1.0, 0.0),      // Green for intermediate rings
+            };
+            
+            draw_contours_gizmo(gizmos, &[(*ring).clone()], z_offset, color);
+        }
+    }
+}
+
+#[cfg(feature = "debug")]
+fn draw_mesh_wireframe_gizmo(gizmos: &mut Gizmos, vertices: &[Vec3], indices: &[u32], color: Color) {
+    // Draw triangle edges
+    for triangle in indices.chunks(3) {
+        if triangle.len() == 3 {
+            let v0 = vertices[triangle[0] as usize];
+            let v1 = vertices[triangle[1] as usize];
+            let v2 = vertices[triangle[2] as usize];
+            
+            gizmos.line(v0, v1, color);
+            gizmos.line(v1, v2, color);
+            gizmos.line(v2, v0, color);
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ExtrudedGlyphGeometry {
     pub vertices: Vec<Vec3>,
-    pub indices: Vec<u16>,
+    pub indices: Vec<u32>,
     pub normals: Vec<Vec3>,
     pub uvs: Vec<Vec2>, // Added UV coordinates for texture mapping
 }
@@ -26,7 +262,7 @@ impl From<ExtrudedGlyphGeometry> for Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, value.vertices)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, value.normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, value.uvs)
-        .with_inserted_indices(bevy::render::mesh::Indices::U16(value.indices))
+        .with_inserted_indices(bevy::render::mesh::Indices::U32(value.indices))
     }
 }
 
@@ -58,7 +294,7 @@ pub fn tessalate_glyph(
     let center_y = (bounding_box.y_min as f32 + bounding_box.y_max as f32) / 2.0;
 
     let mut final_positions: Vec<Vec3> = Vec::new();
-    let mut final_indices: Vec<u16> = Vec::new();
+    let mut final_indices: Vec<u32> = Vec::new();
     let mut final_normals: Vec<Vec3> = Vec::new();
     let mut final_uvs: Vec<Vec2> = Vec::new();
 
@@ -88,7 +324,7 @@ pub fn tessalate_glyph(
     };
 
     // Process front face
-    let front_v_offset = final_positions.len() as u16;
+    let front_v_offset = final_positions.len() as u32;
     for v_pos in &front_geometry.vertices {
         final_positions.push(*v_pos);
         final_normals.push(Vec3::NEG_Z); // Front face normal (0,0,-1)
@@ -100,11 +336,11 @@ pub fn tessalate_glyph(
         final_uvs.push(Vec2::new(uv_x, uv_y));
     }
     for index in &front_geometry.indices {
-        final_indices.push(front_v_offset + *index);
+        final_indices.push(front_v_offset + *index as u32);
     }
 
     // Process back face
-    let back_v_offset = final_positions.len() as u16;
+    let back_v_offset = final_positions.len() as u32;
     for v_pos in &back_geometry.vertices {
         final_positions.push(*v_pos);
         final_normals.push(Vec3::Z); // Back face normal (0,0,1)
@@ -119,9 +355,9 @@ pub fn tessalate_glyph(
     for i in (0..back_geometry.indices.len()).step_by(3) {
         if i + 2 < back_geometry.indices.len() {
             // Ensure we have a full triangle
-            final_indices.push(back_v_offset + back_geometry.indices[i + 2]);
-            final_indices.push(back_v_offset + back_geometry.indices[i + 1]);
-            final_indices.push(back_v_offset + back_geometry.indices[i]);
+            final_indices.push(back_v_offset + back_geometry.indices[i + 2] as u32);
+            final_indices.push(back_v_offset + back_geometry.indices[i + 1] as u32);
+            final_indices.push(back_v_offset + back_geometry.indices[i] as u32);
         }
     }
 
@@ -328,7 +564,7 @@ fn try_tessellation_with_options(
 #[allow(clippy::too_many_arguments)]
 fn add_side_quad(
     positions: &mut Vec<Vec3>,
-    indices: &mut Vec<u16>,
+    indices: &mut Vec<u32>,
     normals: &mut Vec<Vec3>,
     uvs: &mut Vec<Vec2>,
     p1_orig: lyon::geom::Point<f32>,
@@ -342,7 +578,7 @@ fn add_side_quad(
     let p1_back = Vec3::new(p1_orig.x * scale, p1_orig.y * scale, depth);
     let p2_back = Vec3::new(p2_orig.x * scale, p2_orig.y * scale, depth);
 
-    let base_idx = positions.len() as u16;
+    let base_idx = positions.len() as u32;
     positions.extend_from_slice(&[p1_front, p2_front, p1_back, p2_back]);
 
     // Calculate side normal based on the 2D segment direction

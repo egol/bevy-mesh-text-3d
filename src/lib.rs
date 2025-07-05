@@ -13,6 +13,13 @@ pub mod extrude_glyph;
 pub mod mesh_text_plugin;
 pub mod text_glyphs;
 
+// New modules for beveling system
+pub mod glyph;
+pub mod tess;
+pub mod offset;
+pub mod mesh;
+pub mod render;
+
 pub use mesh_text_plugin::*;
 
 use thiserror::Error;
@@ -27,6 +34,39 @@ pub enum MeshTextError {
 
     #[error("The input provided was invalid")]
     InvalidInput,
+    
+    #[error("Font parsing failed")]
+    FontParseFailed,
+    
+    #[error("Glyph not found")]
+    GlyphNotFound,
+    
+    #[error("Invalid contour")]
+    InvalidContour,
+    
+    #[error("Invalid mesh: {0}")]
+    InvalidMesh(String),
+}
+
+/// Parameters for beveling
+#[derive(Debug, Clone)]
+pub struct BevelParameters {
+    /// Width of the bevel
+    pub bevel_width: f32,
+    /// Number of segments for curved profile (≥1)
+    pub bevel_segments: u32,
+    /// Profile power for curve shape (1=linear, 2=rounded)
+    pub profile_power: f32,
+}
+
+impl Default for BevelParameters {
+    fn default() -> Self {
+        Self {
+            bevel_width: 0.1,
+            bevel_segments: 1,
+            profile_power: 1.0,
+        }
+    }
 }
 
 /// A extruded glyph mesh.
@@ -99,4 +139,8 @@ pub struct Parameters {
     pub max_width: Option<f32>,
     /// Maximum height of the textbox.
     pub max_height: Option<f32>,
+    /// Bevel parameters
+    pub bevel: Option<BevelParameters>,
 }
+
+pub use extrude_glyph::{tessalate_glyph, tessellate_beveled_glyph};

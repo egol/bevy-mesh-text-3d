@@ -3,8 +3,13 @@ name = "bevy-mesh-text-3d"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+debug = []
+
 [dependencies]
-bevy = "0.16.0"
+bevy = "0.16.1"
 cosmic-text = "0.14.2"
 lyon = "1.0.1" 
 thiserror = "2.0.12"
+tri-mesh = "0.6.1"

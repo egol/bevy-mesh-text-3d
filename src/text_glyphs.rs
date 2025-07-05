@@ -6,7 +6,8 @@ use cosmic_text::{
 use std::collections::HashMap;
 
 use crate::MeshGlyph;
-use crate::extrude_glyph::tessalate_glyph;
+use crate::extrude_glyph::{tessalate_glyph, tessellate_beveled_glyph};
+use crate::BevelParameters;
 
 pub struct TextGlyphs {
     buffer: cosmic_text::Buffer,
@@ -63,39 +64,96 @@ impl TextGlyphs {
         extrusion_depth: f32,
         meshes: &mut ResMut<Assets<Mesh>>,
         materials: &[Handle<M>],
+        bevel_params: Option<&BevelParameters>,
     ) -> Vec<MeshGlyph<M>> {
-        let mut mesh_map: HashMap<u16, (Handle<Mesh>, f32, f32)> = HashMap::new();
+        let mut mesh_map: HashMap<(u16, bool), (Handle<Mesh>, f32, f32)> = HashMap::new();
         let mut processed_glyphs = Vec::new();
+        let mut cache_hits = 0;
+        let mut cache_builds = 0;
+        
         for run in self.buffer.layout_runs() {
             for glyph in run.glyphs {
+                let use_beveling = bevel_params.is_some();
+                let cache_key = (glyph.glyph_id, use_beveling);
+                
                 let Some((geometry, center_x_layout, center_y_layout)) = mesh_map
-                    .get(&glyph.glyph_id)
+                    .get(&cache_key)
                     .map(|(mesh, center_x_layout, center_y_layout)| {
+                        cache_hits += 1;
                         (mesh.clone(), *center_x_layout, *center_y_layout)
                     })
                     .or_else(|| {
-                        font_system
-                            .db()
-                            .with_face_data(glyph.font_id, |file, _| {
-                                let Ok(face) = Face::parse(file, 0) else {
-                                    error!("Failed to parse font");
-                                    return None;
-                                };
-                                
-                                // Check if the glyph has a bounding box (space characters don't)
-                                let Some(bb) = face.glyph_bounding_box(GlyphId(glyph.glyph_id)) else {
-                                    return None;
-                                };
-                                
-                                match tessalate_glyph(glyph, bb, face, extrusion_depth) {
-                                    Ok(n) => Some(n),
-                                    Err(e) => {
-                                        error!("Failed to tessalate glyph {}: {}", glyph.glyph_id, e);
-                                        None
-                                    }
+                        cache_builds += 1;
+                        
+                        let tessellation_result = if let Some(bevel_params) = bevel_params {
+                            #[cfg(feature = "debug")]
+                            println!("Attempting beveled tessellation for glyph {}", glyph.glyph_id);
+                            
+                            match tessellate_beveled_glyph(glyph, font_system, extrusion_depth, bevel_params) {
+                                Ok(result) => {
+                                    #[cfg(feature = "debug")]
+                                    println!("Beveled tessellation succeeded for glyph {}", glyph.glyph_id);
+                                    Some(result)
                                 }
-                            })
-                            .flatten()
+                                Err(e) => {
+                                    #[cfg(feature = "debug")]
+                                    println!("Beveled tessellation failed for glyph {}: {:?}, falling back to original", glyph.glyph_id, e);
+                                    
+                                    // Fallback to original tessellation method
+                                    font_system
+                                        .db()
+                                        .with_face_data(glyph.font_id, |file, _| {
+                                            let Ok(face) = Face::parse(file, 0) else {
+                                                error!("Failed to parse font");
+                                                return None;
+                                            };
+                                            
+                                            // Check if the glyph has a bounding box (space characters don't)
+                                            let Some(bb) = face.glyph_bounding_box(GlyphId(glyph.glyph_id)) else {
+                                                return None;
+                                            };
+                                            
+                                            match tessalate_glyph(glyph, bb, face, extrusion_depth) {
+                                                Ok(n) => Some(n),
+                                                Err(e) => {
+                                                    error!("Failed to tessalate glyph {}: {}", glyph.glyph_id, e);
+                                                    None
+                                                }
+                                            }
+                                        })
+                                        .flatten()
+                                }
+                            }
+                        } else {
+                            #[cfg(feature = "debug")]
+                            println!("Using original tessellation for glyph {}", glyph.glyph_id);
+                            
+                            // Use original tessellation method
+                            font_system
+                                .db()
+                                .with_face_data(glyph.font_id, |file, _| {
+                                    let Ok(face) = Face::parse(file, 0) else {
+                                        error!("Failed to parse font");
+                                        return None;
+                                    };
+                                    
+                                    // Check if the glyph has a bounding box (space characters don't)
+                                    let Some(bb) = face.glyph_bounding_box(GlyphId(glyph.glyph_id)) else {
+                                        return None;
+                                    };
+                                    
+                                    match tessalate_glyph(glyph, bb, face, extrusion_depth) {
+                                        Ok(n) => Some(n),
+                                        Err(e) => {
+                                            error!("Failed to tessalate glyph {}: {}", glyph.glyph_id, e);
+                                            None
+                                        }
+                                    }
+                                })
+                                .flatten()
+                        };
+                        
+                        tessellation_result
                             .map(|(geometry, center_x_layout, center_y_layout)| {
                                 (meshes.add(geometry), center_x_layout, center_y_layout)
                             })
@@ -103,8 +161,9 @@ impl TextGlyphs {
                 else {
                     continue;
                 };
+                
                 mesh_map
-                    .entry(glyph.glyph_id)
+                    .entry(cache_key)
                     .or_insert_with(|| (geometry.clone(), center_x_layout, center_y_layout));
 
                 let material = materials
@@ -128,6 +187,10 @@ impl TextGlyphs {
                 });
             }
         }
+        
+        #[cfg(feature = "debug")]
+        println!("Checkpoint F: Cache stats - {} hits, {} builds", cache_hits, cache_builds);
+        
         processed_glyphs
     }
 }

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use cosmic_text::{Attrs, Metrics, Style, Weight};
 
-use bevy_mesh_text_3d::{InputText, MeshTextPlugin, Parameters, Settings, generate_meshes};
+use bevy_mesh_text_3d::{generate_meshes, BevelParameters, InputText, MeshTextPlugin, Parameters, Settings};
 
 const CAMERA_VIEWPORT_HEIGHT: f32 = 950.0;
 // This factor controls the overall size of text in the world
@@ -24,8 +24,8 @@ fn main() {
         .add_systems(Update, keyboard_input)
         .insert_resource(AmbientLight {
             color: Color::WHITE,
-            brightness: 900.,
-            ..Default::default()
+            brightness: 900.0,
+            affects_lightmapped_meshes: false,
         })
         .insert_resource(ClearColor(Color::BLACK))
         .add_systems(Startup, setup)
@@ -156,6 +156,11 @@ fn spawn_text(
             alignment: None,
             max_width: None,
             max_height: None,
+            bevel: Some(BevelParameters {
+                bevel_width: 0.7,
+                bevel_segments: 3,
+                profile_power: 1.0,
+            }),
         },
         &mut meshes,
     )

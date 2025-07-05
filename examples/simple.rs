@@ -9,7 +9,7 @@ use bevy::{
 };
 use cosmic_text::Attrs;
 
-use bevy_mesh_text_3d::{InputText, MeshTextPlugin, Parameters, Settings, generate_meshes};
+use bevy_mesh_text_3d::{generate_meshes, BevelParameters, InputText, MeshTextPlugin, Parameters, Settings};
 
 const CAMERA_VIEWPORT_HEIGHT: f32 = 950.0;
 // This factor controls the overall size of text in the world
@@ -34,7 +34,7 @@ fn main() {
             // The global wireframe config enables drawing of wireframes on every mesh,
             // except those with `NoWireframe`. Meshes with `Wireframe` will always have a wireframe,
             // regardless of the global configuration.
-            global: true,
+            global: false,
             // Controls the default color of all wireframes. Used as the default color for global wireframes.
             // Can be changed per mesh using the `WireframeColor` component.
             default_color: WHITE.into(),
@@ -45,8 +45,8 @@ fn main() {
         .add_systems(Update, keyboard_input)
         .insert_resource(AmbientLight {
             color: Color::WHITE,
-            brightness: 800.,
-            ..Default::default()
+            brightness: 800.0,
+            affects_lightmapped_meshes: false,
         })
         .add_systems(Startup, setup)
         .add_systems(Startup, spawn_text)
@@ -68,7 +68,7 @@ pub struct RotatingText {
 
 impl Default for RotatingText {
     fn default() -> Self {
-        Self { speed: 2.0 }
+        Self { speed: 0.5 }
     }
 }
 
@@ -82,7 +82,7 @@ fn rotate_text(mut query: Query<(&mut Transform, &RotatingText)>, time: Res<Time
 fn setup(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 0.0, 450.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(0.0, 0.0, 100.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
 
@@ -105,11 +105,16 @@ fn spawn_text(
         &mut fonts,
         Parameters {
             extrusion_depth: 2.5,
-            font_size: 14.0,
-            line_height: 16.0,
+            font_size: 72.0,
+            line_height: 80.0,
             alignment: None,
             max_width: None,
             max_height: None,
+            bevel: Some(BevelParameters {
+                bevel_width: 0.7,
+                bevel_segments: 3,
+                profile_power: 1.0,
+            }),
         },
         &mut meshes,
     )
@@ -120,7 +125,7 @@ fn spawn_text(
             Mesh3d(mesh.mesh),
             MeshMaterial3d(mesh.material),
             mesh.transform.with_translation(Vec3::new(
-                -200.0 + mesh.transform.translation.x,
+                mesh.transform.translation.x,
                 mesh.transform.translation.y,
                 mesh.transform.translation.z,
             )),

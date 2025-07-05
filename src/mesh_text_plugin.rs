@@ -1,6 +1,7 @@
 use crate::text_glyphs::TextGlyphs;
 use crate::{InputText, MeshTextError};
 use crate::{MeshTextEntry, Parameters};
+use crate::render::DebugRenderPlugin;
 use bevy::prelude::*;
 use cosmic_text::{FontSystem, Metrics};
 
@@ -18,6 +19,9 @@ impl Plugin for MeshTextPlugin {
             font_system: FontSystem::new(),
             text_scale_factor: self.0,
         });
+        
+        // Add debug rendering plugin
+        app.add_plugins(DebugRenderPlugin);
     }
 }
 
@@ -75,6 +79,7 @@ pub fn generate_meshes<M: Asset>(
         params.extrusion_depth,
         meshes,
         &materials,
+        params.bevel.as_ref(), // Pass bevel parameters
     );
 
     let mut meshes = Vec::new();

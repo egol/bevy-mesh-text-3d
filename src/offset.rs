@@ -264,6 +264,10 @@ pub fn compute_bevel_rings(
         return Ok(Vec::new());
     }
     
+    #[cfg(feature = "debug")]
+    println!("Computing bevel rings for {} contours, bevel_width={}, segments={}", 
+             contours.len(), bevel_width, bevel_segments);
+    
     // Convert contours to polylines
     let mut polylines = Vec::new();
     for (i, contour) in contours.iter().enumerate() {
@@ -282,7 +286,7 @@ pub fn compute_bevel_rings(
         return Ok(Vec::new());
     }
     
-    // Process each polyline as a separate shape (like the official example)
+    // Process each polyline as a separate shape (using the working pattern from test_glyph_offset.rs)
     let mut all_bevel_rings = Vec::new();
     
     for polyline in polylines.into_iter() {
@@ -292,61 +296,62 @@ pub fn compute_bevel_rings(
             continue;
         }
         
-        // Create a shape from the single polyline
+        // Create a shape from the single polyline (exactly like the working test)
         let shape = Shape::from_plines(std::iter::once(polyline.clone()));
         
-        // Create outer offset (positive)
-        let outer_offset = shape.parallel_offset(bevel_width as f64, ShapeOffsetOptions::default());
+        #[cfg(feature = "debug")]
+        println!("Created shape with {} CCW plines, {} CW plines", 
+                 shape.ccw_plines.len(), shape.cw_plines.len());
         
-        // Create inner offset (negative)
-        let inner_offset = shape.parallel_offset(-(bevel_width as f64), ShapeOffsetOptions::default());
+        // Generate progressive inward offsets (like the working test_glyph_offset.rs)
+        let mut bevel_rings = Vec::new();
+        let max_offset_count = bevel_segments.max(1);
+        let options = ShapeOffsetOptions::default();
         
-        // Convert outer offset results to contours
-        let mut outer_contours = Vec::new();
-        for indexed_pline in outer_offset.ccw_plines.iter().chain(outer_offset.cw_plines.iter()) {
-            outer_contours.push(polyline_to_contour(&indexed_pline.polyline));
-        }
-        
-        // Convert inner offset results to contours
-        let mut inner_contours = Vec::new();
-        for indexed_pline in inner_offset.ccw_plines.iter().chain(inner_offset.cw_plines.iter()) {
-            inner_contours.push(polyline_to_contour(&indexed_pline.polyline));
-        }
-        
-        // Generate intermediate rings for curved profiles
-        let mut rings = Vec::new();
-        
-        if bevel_segments > 2 {
-            for i in 1..bevel_segments {
-                let t = i as f32 / bevel_segments as f32;
-                // Apply profile power for curved transitions
-                let profile_t = t.powf(profile_power);
-                let offset_distance = bevel_width * (1.0 - profile_t);
-                
-                let ring_offset = shape.parallel_offset(offset_distance as f64, ShapeOffsetOptions::default());
-                
-                for indexed_pline in ring_offset.ccw_plines.iter().chain(ring_offset.cw_plines.iter()) {
-                    rings.push(polyline_to_contour(&indexed_pline.polyline));
-                }
-            }
-        }
-        
-        // Create bevel rings from the results
-        // Use the original contour as fallback if no offsets were generated
+        // First ring is the original contour
         let original_contour = polyline_to_contour(&polyline);
+        bevel_rings.push(original_contour.clone());
         
-        let outer_contour = outer_contours.first()
-            .cloned()
-            .unwrap_or_else(|| original_contour.clone());
+        // Generate inward offset shapes progressively
+        let mut curr_offset = shape.parallel_offset(bevel_width as f64, options);
         
-        let inner_contour = inner_contours.first()
-            .cloned()
-            .unwrap_or_else(|| original_contour.clone());
+        while (!curr_offset.ccw_plines.is_empty() || !curr_offset.cw_plines.is_empty()) && bevel_rings.len() < max_offset_count {
+            #[cfg(feature = "debug")]
+            println!("Bevel ring {}: {} CCW plines, {} CW plines", 
+                     bevel_rings.len(), curr_offset.ccw_plines.len(), curr_offset.cw_plines.len());
+            
+            // Convert offset results to contours
+            for indexed_pline in curr_offset.ccw_plines.iter().chain(curr_offset.cw_plines.iter()) {
+                bevel_rings.push(polyline_to_contour(&indexed_pline.polyline));
+            }
+            
+            if bevel_rings.len() >= max_offset_count {
+                break;
+            }
+            
+            // Generate next offset
+            curr_offset = curr_offset.parallel_offset(bevel_width as f64, ShapeOffsetOptions::default());
+        }
+        
+        #[cfg(feature = "debug")]
+        println!("Generated {} bevel rings total", bevel_rings.len());
+        
+        // Create BevelRings structure
+        // For the new system, we'll use the rings array to store all progressive offsets
+        let outer_contour = bevel_rings.first().cloned().unwrap_or(original_contour.clone());
+        let inner_contour = bevel_rings.last().cloned().unwrap_or(original_contour.clone());
+        
+        // All intermediate rings (excluding first and last)
+        let intermediate_rings = if bevel_rings.len() > 2 {
+            bevel_rings[1..bevel_rings.len()-1].to_vec()
+        } else {
+            Vec::new()
+        };
         
         all_bevel_rings.push(BevelRings {
             outer_contour,
             inner_contour,
-            rings,
+            rings: intermediate_rings,
         });
     }
     

@@ -78,27 +78,32 @@ fn build_improved_bevel_ring_geometry(
     bevel_ring: &BevelRings,
     extrusion_depth: f32,
 ) -> Result<(), MeshTextError> {
+    // Build ordered sequence of rings: outer -> intermediates -> inner
     let mut all_rings = vec![&bevel_ring.outer_contour];
     all_rings.extend(bevel_ring.rings.iter());
     all_rings.push(&bevel_ring.inner_contour);
     
+    #[cfg(feature = "debug")]
+    println!("Building bevel geometry with {} rings", all_rings.len());
+    
     // Store vertex offset for each ring
     let mut ring_offsets = Vec::new();
     
-    // Add vertices for each ring at different Z levels
+    // Add vertices for each ring at progressively deeper Z levels
     for (ring_idx, ring) in all_rings.iter().enumerate() {
         let ring_offset = vertices.len();
         ring_offsets.push(ring_offset);
         
-        let z_offset = if ring_idx == 0 {
-            0.0 // Outer ring at front
-        } else if ring_idx == all_rings.len() - 1 {
-            extrusion_depth // Inner ring at back
+        // Calculate Z offset for proper bevel slope
+        let z_offset = if all_rings.len() == 1 {
+            0.0 // Single ring case
         } else {
-            // Intermediate rings interpolated
             let t = ring_idx as f32 / (all_rings.len() - 1) as f32;
             t * extrusion_depth
         };
+        
+        #[cfg(feature = "debug")]
+        println!("Ring {} at Z={:.3} with {} vertices", ring_idx, z_offset, ring.vertices.len());
         
         // Add ring vertices
         for vertex in &ring.vertices {
@@ -106,20 +111,24 @@ fn build_improved_bevel_ring_geometry(
         }
     }
     
-    // Build triangles between consecutive rings
+    // Build triangles between consecutive rings to form bevel surface
     for ring_idx in 0..all_rings.len() - 1 {
         let current_ring = &all_rings[ring_idx];
         let next_ring = &all_rings[ring_idx + 1];
         
+        // Skip if rings have different vertex counts - this can happen with complex offsets
         if current_ring.vertices.len() != next_ring.vertices.len() {
-            continue; // Skip rings with different vertex counts
+            #[cfg(feature = "debug")]
+            println!("Skipping ring connection {}->{} due to vertex count mismatch ({} vs {})", 
+                     ring_idx, ring_idx + 1, current_ring.vertices.len(), next_ring.vertices.len());
+            continue;
         }
         
         let current_offset = ring_offsets[ring_idx] as u32;
         let next_offset = ring_offsets[ring_idx + 1] as u32;
         let vertex_count = current_ring.vertices.len();
         
-        // Create triangles between rings with correct winding
+        // Create triangles between rings with correct winding for outward-facing normals
         for i in 0..vertex_count {
             let next_i = if current_ring.is_closed { 
                 (i + 1) % vertex_count 
@@ -134,20 +143,20 @@ fn build_improved_bevel_ring_geometry(
             let v2 = next_offset + next_i as u32;
             let v3 = next_offset + i as u32;
             
-            // Ensure proper winding order (counter-clockwise from outside)
-            // First triangle of quad
+            // Create quad between rings with proper winding
+            // First triangle of quad (v0, v1, v2)
             indices.push(v0);
             indices.push(v1);
             indices.push(v2);
             
-            // Second triangle of quad  
+            // Second triangle of quad (v0, v2, v3)
             indices.push(v0);
             indices.push(v2);
             indices.push(v3);
         }
     }
     
-    // Add back cap for innermost contour
+    // Add back cap triangulation for the innermost (deepest) ring
     if let Some(inner_ring) = all_rings.last() {
         if inner_ring.vertices.len() >= 3 {
             let inner_offset = ring_offsets.last().unwrap();

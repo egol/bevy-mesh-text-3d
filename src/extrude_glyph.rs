@@ -10,6 +10,10 @@ use lyon::{
 use crate::MeshTextError;
 use crate::BevelParameters;
 
+// Constants for tessellation
+const TESSELLATION_TOLERANCE: f32 = 0.25;
+const FALLBACK_TESSELLATION_TOLERANCE: f32 = 0.5;
+
 // New beveling function using the modular approach with gizmo visualization
 pub fn tessellate_beveled_glyph(
     glyph_info: &cosmic_text::LayoutGlyph,
@@ -514,7 +518,7 @@ fn try_tessellation_with_fallbacks(
     
     // Second attempt: Use higher tolerance
     let mut options = FillOptions::default();
-    options.tolerance = 0.5; // Much higher tolerance
+    options.tolerance = FALLBACK_TESSELLATION_TOLERANCE;
     
     let result = try_tessellation_with_options(
         tessellator,

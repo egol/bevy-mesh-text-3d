@@ -5,7 +5,8 @@ use cosmic_text::{
 
 use bevy_mesh_text_3d::{
     glyph::{extract_glyph_outline, GlyphOutline},
-    offset::{extract_contours, Contour, contour_to_polyline, compute_bevel_rings, BevelRings, draw_polyline, draw_contour_outline},
+    offset::{extract_contours, Contour, compute_bevel_rings, BevelRings, draw_contour_outline},
+    mesh::build_mesh_from_bevel_rings,
     BevelParameters,
 };
 
@@ -15,18 +16,24 @@ struct BevelVisualizationResults {
     bevel_rings: Vec<BevelRings>,
     bevel_params: BevelParameters,
     computed: bool,
+    mesh_generated: bool,
 }
+
+#[derive(Component)]
+struct BevelMesh;
 
 fn main() {
     println!("=== BEVEL VISUALIZATION EXAMPLE ===");
     println!("Visualizing individual bevel rings like the offset test");
     println!("Shows the progressive inward offset rings that create the bevel");
+    println!("Now also generates actual meshes from the bevel rings!");
     println!("=====================================");
     
     App::new()
         .add_plugins(DefaultPlugins)
         .add_systems(Startup, setup)
         .add_systems(Update, compute_bevel_visualization)
+        .add_systems(Update, generate_mesh_from_bevel_rings)
         .add_systems(Update, draw_bevel_visualization)
         .add_systems(Update, (keyboard_input, rotate_camera))
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
@@ -35,14 +42,24 @@ fn main() {
             bevel_rings: Vec::new(),
             bevel_params: BevelParameters::default(),
             computed: false,
+            mesh_generated: false,
         })
         .run();
 }
 
-fn keyboard_input(keys: Res<ButtonInput<KeyCode>>) {
+fn keyboard_input(keys: Res<ButtonInput<KeyCode>>, mut viz_results: ResMut<BevelVisualizationResults>) {
     if keys.just_pressed(KeyCode::Escape) {
         println!("Exiting bevel visualization...");
         std::process::exit(0);
+    }
+    
+    if keys.just_pressed(KeyCode::KeyM) {
+        viz_results.mesh_generated = false; // Reset to regenerate mesh
+        println!("Mesh regeneration requested");
+    }
+    
+    if keys.just_pressed(KeyCode::KeyG) {
+        println!("Gizmo visualization toggle (always on in this example)");
     }
 }
 
@@ -99,6 +116,8 @@ fn setup(mut commands: Commands) {
     println!("\n=== CONTROLS ===");
     println!("ESC - Exit");
     println!("Space - Pause/Resume camera rotation");
+    println!("M - Regenerate mesh");
+    println!("G - Toggle gizmo visualization (always on)");
     println!("Camera automatically orbits around the letter");
     println!("================");
 }
@@ -120,7 +139,7 @@ fn compute_bevel_visualization(mut viz_results: ResMut<BevelVisualizationResults
     
     buffer.set_rich_text(
         &mut font_system,
-        [("A", attrs.clone())],
+        [("B", attrs.clone())],
         &attrs,
         Shaping::Advanced,
         Some(Align::Center),
@@ -179,8 +198,8 @@ fn compute_bevel_visualization(mut viz_results: ResMut<BevelVisualizationResults
     // Test different bevel configurations
     let bevel_configs = vec![
         BevelParameters {
-            bevel_width: 1.0,
-            bevel_segments: 3,
+            bevel_width: 1.5,
+            bevel_segments: 1,
             profile_power: 1.0,
         },
     ];
@@ -216,6 +235,63 @@ fn compute_bevel_visualization(mut viz_results: ResMut<BevelVisualizationResults
     }
 }
 
+fn generate_mesh_from_bevel_rings(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut viz_results: ResMut<BevelVisualizationResults>,
+    existing_meshes: Query<Entity, With<BevelMesh>>,
+) {
+    if !viz_results.computed || viz_results.mesh_generated {
+        return;
+    }
+    
+    println!("\n=== GENERATING MESH FROM BEVEL RINGS ===");
+    
+    // Remove existing mesh entities
+    for entity in existing_meshes.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // Generate mesh from bevel rings
+    match build_mesh_from_bevel_rings(
+        &viz_results.bevel_rings,
+        10.0, // extrusion_depth
+        0, // glyph_id
+    ) {
+        Ok(beveled_geometry) => {
+            println!("✅ Generated mesh with {} vertices, {} triangles", 
+                     beveled_geometry.vertices.len(), beveled_geometry.indices.len() / 3);
+            
+            // Convert to Bevy mesh
+            let mesh: Mesh = beveled_geometry.into();
+            let mesh_handle = meshes.add(mesh);
+            
+            // Create a material for the mesh
+            let material = materials.add(StandardMaterial {
+                base_color: Color::srgb(0.8, 0.7, 0.6),
+                metallic: 0.0,
+                perceptual_roughness: 0.8,
+                ..default()
+            });
+            
+            // Spawn the mesh entity
+            commands.spawn((
+                Mesh3d(mesh_handle),
+                MeshMaterial3d(material),
+                Transform::from_xyz(-50.0, 0.0, 0.0), // Offset to the side
+                BevelMesh,
+            ));
+            
+            viz_results.mesh_generated = true;
+            println!("✅ MESH GENERATED AND SPAWNED SUCCESSFULLY!");
+        }
+        Err(e) => {
+            println!("❌ Failed to generate mesh: {}", e);
+        }
+    }
+}
+
 fn draw_bevel_visualization(mut gizmos: Gizmos, viz_results: Res<BevelVisualizationResults>) {
     if !viz_results.computed {
         return; // Nothing to draw yet
@@ -242,8 +318,7 @@ fn draw_bevel_visualization(mut gizmos: Gizmos, viz_results: Res<BevelVisualizat
     ];
     
     // Draw each bevel ring set
-    for (ring_set_idx, bevel_ring) in viz_results.bevel_rings.iter().enumerate() {
-        println!("Drawing bevel ring set {}", ring_set_idx);
+    for (_ring_set_idx, bevel_ring) in viz_results.bevel_rings.iter().enumerate() {
         
         // Collect all rings in order: outer -> intermediates -> inner
         let mut all_rings = vec![&bevel_ring.outer_contour];
@@ -281,4 +356,12 @@ fn draw_bevel_visualization(mut gizmos: Gizmos, viz_results: Res<BevelVisualizat
     // Draw labels
     let label_offset = Vec3::new(35.0, 0.0, 0.0);
     gizmos.line(origin + label_offset, origin + label_offset + Vec3::X * 5.0, Color::WHITE);
+    
+    // Draw separation line between gizmo and mesh visualization
+    let sep_x = -25.0;
+    gizmos.line(
+        Vec3::new(sep_x, -30.0, 0.0),
+        Vec3::new(sep_x, 30.0, 0.0),
+        Color::srgb(0.8, 0.8, 0.8),
+    );
 } 

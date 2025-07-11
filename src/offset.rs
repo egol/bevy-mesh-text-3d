@@ -305,7 +305,8 @@ pub fn compute_bevel_rings(
         
         // Generate progressive inward offsets (like the working test_glyph_offset.rs)
         let mut bevel_rings = Vec::new();
-        let max_offset_count = bevel_segments.max(1);
+        // For n bevel segments, we need n+1 rings (outer + n intermediate/inner rings)
+        let max_ring_count = bevel_segments.max(1) + 1;
         let options = ShapeOffsetOptions::default();
         
         // First ring is the original contour
@@ -313,9 +314,12 @@ pub fn compute_bevel_rings(
         bevel_rings.push(original_contour.clone());
         
         // Generate inward offset shapes progressively
-        let mut curr_offset = shape.parallel_offset(bevel_width as f64, options);
+        // For bevel_segments = 1, we need to create one offset (2 rings total)
+        // For bevel_segments = n, we need to create n offsets (n+1 rings total)
+        let offset_step = bevel_width as f64 / bevel_segments as f64;
+        let mut curr_offset = shape.parallel_offset(offset_step, options);
         
-        while (!curr_offset.ccw_plines.is_empty() || !curr_offset.cw_plines.is_empty()) && bevel_rings.len() < max_offset_count {
+        while (!curr_offset.ccw_plines.is_empty() || !curr_offset.cw_plines.is_empty()) && bevel_rings.len() < max_ring_count {
             #[cfg(feature = "debug")]
             println!("Bevel ring {}: {} CCW plines, {} CW plines", 
                      bevel_rings.len(), curr_offset.ccw_plines.len(), curr_offset.cw_plines.len());
@@ -325,12 +329,13 @@ pub fn compute_bevel_rings(
                 bevel_rings.push(polyline_to_contour(&indexed_pline.polyline));
             }
             
-            if bevel_rings.len() >= max_offset_count {
+            if bevel_rings.len() >= max_ring_count {
                 break;
             }
             
-            // Generate next offset
-            curr_offset = curr_offset.parallel_offset(bevel_width as f64, ShapeOffsetOptions::default());
+            // Generate next offset with progressive stepping
+            let current_step = (bevel_rings.len() as f64) * offset_step;
+            curr_offset = shape.parallel_offset(current_step, ShapeOffsetOptions::default());
         }
         
         #[cfg(feature = "debug")]

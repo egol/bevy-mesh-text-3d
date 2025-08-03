@@ -2,6 +2,8 @@ use crate::text_glyphs::TextGlyphs;
 use crate::{InputText, MeshTextError};
 use crate::{MeshTextEntry, Parameters};
 use bevy::prelude::*;
+use cosmic_text::fontdb::{Database, Source};
+use std::sync::Arc;
 use cosmic_text::{FontSystem, Metrics};
 
 pub struct MeshTextPlugin(f32);
@@ -15,7 +17,17 @@ impl MeshTextPlugin {
 impl Plugin for MeshTextPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Settings {
-            font_system: FontSystem::new(),
+            font_system: {
+                // Load a single, embedded font into a custom font database so we avoid an expensive scan of the host system fonts.
+                // NOTE: Replace the placeholder "Roboto-Bold.ttf" with the actual font you want to embed.
+                let font_source = Source::Binary(Arc::new(include_bytes!("../assets/centurygothic_bold.ttf").to_vec()));
+
+                let mut font_db = Database::new();
+                font_db.load_font_source(font_source);
+
+                // Initialise the FontSystem with a fixed locale and our prepared database
+                FontSystem::new_with_locale_and_db(String::from("en-US"), font_db)
+            },
             text_scale_factor: self.0,
         });
     }

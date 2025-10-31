@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use cosmic_text::{
     Align, Attrs, Buffer, FontSystem, Metrics, Shaping,
-    ttf_parser::{Face, GlyphId},
 };
+use owned_ttf_parser::{Face, GlyphId};
 use std::collections::HashMap;
 
 use crate::MeshGlyph;

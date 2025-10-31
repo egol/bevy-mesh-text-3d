@@ -1,6 +1,6 @@
 use bevy::{
     asset::{Asset, Handle},
-    render::mesh::Mesh,
+    prelude::Mesh,
     transform::components::Transform,
 };
 pub use cosmic_text::{

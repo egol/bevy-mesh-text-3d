@@ -1,4 +1,4 @@
-use cosmic_text::ttf_parser::OutlineBuilder;
+use owned_ttf_parser::OutlineBuilder;
 use lyon::math::Point;
 use lyon::path::Path;
 

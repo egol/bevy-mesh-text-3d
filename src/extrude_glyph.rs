@@ -1,6 +1,7 @@
-use bevy::{asset::RenderAssetUsages, prelude::*, render::mesh::PrimitiveTopology};
-use cosmic_text::ttf_parser::Rect;
-use cosmic_text::ttf_parser::{Face, GlyphId};
+use bevy::{asset::RenderAssetUsages, prelude::*};
+use bevy::mesh::{PrimitiveTopology, Indices};
+use owned_ttf_parser::Rect;
+use owned_ttf_parser::{Face, GlyphId};
 use lyon::{
     geom::point,
     path::PathEvent,
@@ -26,7 +27,7 @@ impl From<ExtrudedGlyphGeometry> for Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, value.vertices)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, value.normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, value.uvs)
-        .with_inserted_indices(bevy::render::mesh::Indices::U16(value.indices))
+        .with_inserted_indices(Indices::U16(value.indices))
     }
 }
 
